@@ -1,0 +1,93 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:14-alpine
+    env_file: .env
+    environment:
+      - POSTGRES_DB=${DB_NAME}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - web
+
+  # Redis Cache and Message Broker
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - web
+
+  # Django Web Application
+  web:
+    build:
+      context: .
+    env_file: .env
+    command: >
+      sh -c "python manage.py makemigrations &&
+             python manage.py migrate &&
+             gunicorn api.wsgi --bind 0.0.0.0:8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api:/api
+      - ./data/web:/vol/web
+    environment:
+      - DB_HOST=${DB_HOST}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - web
+
+  # Celery Worker
+  celery_worker:
+    build:
+      context: .
+    env_file: .env
+    command: celery -A api worker -l info --concurrency=4
+    volumes:
+      - ./api:/api
+      - ./data/web:/vol/web
+    environment:
+      - DB_HOST=${DB_HOST}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+    depends_on:
+      - db
+      - redis
+      - web
+    networks:
+      - web
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  web:
+    driver: bridge

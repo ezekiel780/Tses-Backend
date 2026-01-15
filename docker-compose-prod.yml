@@ -1,0 +1,90 @@
+version: '3.9'
+
+services:
+    app:
+        build:
+            context: .
+        image: lipschitz/app:latest
+        restart: unless-stopped
+        env_file: .env.prod
+        environment:
+            - DEBUG=0
+            - DB_HOST=db
+        ports:
+            - "8000:8000"  # Direct access to app
+        depends_on:
+            db:
+                condition: service_healthy
+        volumes:
+            - static-data:/vol/web
+            - ./api:/api:ro
+        networks:
+            - web
+        labels:
+            - "traefik.enable=true"
+            - "traefik.http.routers.lipschitz-http.rule=Host(`${DOMAIN}`)"
+            - "traefik.http.routers.lipschitz-http.entrypoints=web"
+            - "traefik.http.routers.lipschitz-http.middlewares=redirect-to-https"
+            - "traefik.http.routers.lipschitz.rule=Host(`${DOMAIN}`)"
+            - "traefik.http.routers.lipschitz.entrypoints=websecure"
+            - "traefik.http.routers.lipschitz.tls=true"
+            - "traefik.http.routers.lipschitz.tls.certresolver=le"
+            - "traefik.http.services.lipschitz.loadbalancer.server.port=8000"
+            - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+            - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+        healthcheck:
+            test: ["CMD-SHELL", "curl -f http://localhost:8000/health/ || exit 1"]
+            interval: 30s
+            timeout: 10s
+            retries: 5
+            start_period: 40s
+
+    db:
+        image: postgres:14-alpine
+        restart: unless-stopped
+        env_file: .env.prod
+        environment:
+            - POSTGRES_DB=${DB_NAME}
+            - POSTGRES_USER=${DB_USER}
+            - POSTGRES_PASSWORD=${DB_PASSWORD}
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+        networks:
+            - web
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 10s
+
+    traefik:
+        image: traefik:v2.10
+        restart: unless-stopped
+        ports:
+            - "80:80"
+            - "443:443"
+        command:
+            - --api.insecure=false
+            - --providers.docker=true
+            - --providers.docker.exposedbydefault=false
+            - --providers.docker.endpoint=npipe:////./pipe/docker_engine
+            - --entrypoints.web.address=:80
+            - --entrypoints.websecure.address=:443
+            - --certificatesresolvers.le.acme.tlschallenge=true
+            - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL}
+            - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+        volumes:
+            - //./pipe/docker_engine://./pipe/docker_engine
+            - traefik_letsencrypt:/letsencrypt
+        networks:
+            - web
+
+volumes:
+    postgres_data:
+    static-data:
+    traefik_letsencrypt:
+
+networks:
+    web:
+        driver: bridge
